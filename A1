@@ -1,0 +1,200 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jan 28 22:31:39 2020
+
+@author: Owner
+"""
+
+import math
+import pandas as pd
+import numpy as np
+import datetime as dt
+import matplotlib
+import matplotlib.pyplot as plt
+import scipy.optimize as optimize
+import scipy.interpolate
+#Below function - reference to https://github.com/jamesmawm/Mastering-Python-for-Finance-source-codes/blob/master/B03898_05_Codes/bond_ytm.py
+def bond_ytm(price, par, T, coup, freq=2, guess=0.05):
+    freq = float(freq)
+    periods = T*freq
+    coupon = coup/100.*par/freq
+    dt = [(i+1)/freq for i in range(int(periods))]
+    ytm_func = lambda y : \
+    sum([coupon / (1 + y / freq)**(freq * t) for t in dt]) + \
+    par / (1 + y / freq)**(freq * max(dt)) - price
+    return optimize.newton(ytm_func, guess)
+#Reference ends
+    
+#Read and transform data
+df = pd.read_excel("C:\\Users\\Owner\\Desktop\\bond_data.xls", names = ['SEC_NAME','ISIN','COUPON','ISSUE_DT','MATURITY_DT','LAST_CP_DT','2020-01-02','2020-01-03', '2020-01-06','2020-01-07','2020-01-08','2020-01-09','2020-01-10','2020-01-13','2020-01-14','2020-01-15'])
+df_price = df.drop(columns = ['SEC_NAME', 'ISIN', 'COUPON', 'ISSUE_DT', 'MATURITY_DT', 'LAST_CP_DT'])
+today = dt.datetime(2020,2,1)
+time_to_maturity = []
+for bond in range(len(df)):
+    ttm = (df['MATURITY_DT'][bond] - today).days/365
+    time_to_maturity.append(ttm)
+df['TTM'] = time_to_maturity
+#Calculate cash flows for each bond
+cash_flows = []
+for bond in range(len(df)):
+    cf = []
+    for i in range(bond):
+        value = df['COUPON'][bond]/2*100
+        cf.append(value)
+    nominal = 100 + df['COUPON'][bond]/2*100
+    cf.append(nominal)
+    cash_flows.append(cf)
+#Calculate time to maturity of each cash flow for each bond
+cf_ttm = []
+for bond in range(len(df)):
+    t_1 = 0.5 - (today - df['LAST_CP_DT'][bond]).days/365
+    ttm = [t_1]
+    for i in range(len(cash_flows[bond])-1):
+        t = ttm[i] + 1/2
+        ttm.append(t)
+    cf_ttm.append(ttm)
+
+#Calculate accrued interest
+AI = []
+for bond in range(len(df)):
+    last_cp_dt = df.loc[bond,'LAST_CP_DT']
+    cp = df.loc[bond, 'COUPON']
+    n = today - last_cp_dt
+    acc_int = n.days/365*cp*100
+    AI.append(acc_int)
+
+#Calculate dirty price    
+df_dirty = df_price.add(AI, axis = 'rows')
+
+#Calculating ytm
+ytm = []
+price_dt = ['2020-01-02','2020-01-03', '2020-01-06','2020-01-07','2020-01-08','2020-01-09','2020-01-10','2020-01-13','2020-01-14','2020-01-15']
+for bond in range(len(df)):
+    ytm_list = []
+    if bond == 0:
+        for date_ in price_dt:
+            ttm = 1/df['TTM'][bond]
+            nominal = 100 + + df['COUPON'][bond]/2*100
+            price = df_dirty.loc[bond, date_]
+            ytm_local = ((nominal/price)**ttm)-1
+            ytm_list.append(ytm_local)
+        ytm.append(ytm_list)
+    else:
+        for date_ in price_dt:
+            cp = df['COUPON'][bond]*100
+            ttm = df['TTM'][bond]
+            price = df_dirty.loc[bond, date_]
+            ytm_local = bond_ytm(price=price, par=100, T=ttm, coup=cp, freq=2, guess=0.05)
+            ytm_list.append(ytm_local)
+        ytm.append(ytm_list)
+df_ytm = pd.DataFrame(ytm)
+for i in range(10):
+    plt.plot(time_to_maturity, df_ytm[i].tolist(), marker = 'x', label = price_dt[i])
+plt.suptitle('Yield Curve')    
+ttm_int = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5,5.5]
+plt.xlabel('Time To Maturity')
+plt.ylabel('YTM')
+
+#interpolate
+time_to_maturity_int = [0.3, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]
+interpolated_ytm = []
+for i in range(len(df_ytm)-1):
+    ytm = df_ytm[i].tolist()
+    ytm_int = []
+    interpolate = scipy.interpolate.interp1d(time_to_maturity_int, ytm)
+    for ttm in time_to_maturity_int:
+        interpolated = interpolate(ttm)
+        if not scipy.isnan(ttm):
+            ytm_int.append(interpolated)
+    interpolated_ytm.append(ytm_int)
+df_interpolated_ytm = pd.DataFrame(interpolated_ytm).transpose()
+for i in range(10):
+    plt.plot(time_to_maturity_int, df_interpolated_ytm[i].tolist(), marker = 'x', label = price_dt[i])
+plt.legend()
+plt.suptitle('Yield Curve')    
+plt.xlabel('Time To Maturity')
+plt.ylabel('YTM')
+
+
+#Spot Rate
+spot_rate = []
+for date_ in price_dt:
+    price = df_dirty[date_].tolist()#day 1 prices
+    spot = []
+    for bond_index in range(len(cash_flows)):
+        cf = cash_flows[bond_index]
+        ttm = cf_ttm[bond_index]
+        n_1 = 0
+        for i in range(len(cf)-1):#calculate sum of n-1
+            cf_ = cf[i]
+            t = ttm[i]
+            r = spot[i]
+            n_1 = cf_*math.exp(r*t)
+        cf_n = cf[-1]
+        t = ttm[-1]
+        price_n = price[bond_index]
+        r = -(np.log((price_n - n_1)/cf_n)/t)
+        spot.append(r)
+    spot_rate.append(spot)
+df_spot_rate = pd.DataFrame(spot_rate).transpose()
+for i in range(10):
+    plt.plot(time_to_maturity, df_spot_rate[i].tolist(), marker = 'x', label = price_dt[i])
+plt.legend()
+plt.suptitle('Spot Curve')    
+plt.xlabel('Time To Maturity')
+plt.ylabel('Spot Rate')
+
+
+interpolated_spot = []
+for i in range(len(df_spot_rate)):
+    s = df_spot_rate.loc[i].tolist()
+    s_int = []
+    interpolate = scipy.interpolate.interp1d(time_to_maturity_int, s)
+    for i in time_to_maturity_int:
+        interpolated = interpolate(i)
+        if not scipy.isnan(i):
+            s_int.append(interpolated)
+    interpolated_spot.append(s_int)
+df_interpolated_spot = pd.DataFrame(interpolated_spot)
+
+#Forward
+df_forward = pd.DataFrame()
+for i in range(1,5):
+    if i == 1:
+        df_forward['1y1y'] = df_interpolated_spot[1]
+    else:
+        s1 = (1+(df_interpolated_spot[2]/2))**2
+        si = (1+(df_interpolated_spot[2*i]/2))**(2*i)
+        df_forward['1y'+str(i)+'y'] = (((si/s1)**(1/(i-1)))-1)*2
+for i in range(1,10):
+    plt.plot([1,2,3,4], df_forward.loc[i].tolist(), marker = 'x')
+plt.suptitle('Forward Curve')    
+plt.xlabel('t')
+plt.ylabel('r')
+    
+
+#5
+x_yield_list = []
+for i in range(1,6):
+    x = []
+    for j in range(0,9):
+        value = math.log(df_spot_rate.loc[2*i,j+1]/df_spot_rate.loc[2*i,j])
+        x.append(value)
+    x_yield_list.append(x)
+x_yield = pd.DataFrame(x_yield_list)
+cov_x_yield = pd.DataFrame(np.cov(x_yield))
+from numpy import linalg
+eig_x_yield = linalg.eig(cov_x_yield)
+
+
+x_forward_list = []
+for i in df_forward.columns.tolist():
+    x = []
+    for j in range(0,9):
+        value = math.log(df_forward[i][j+1]/df_forward[i][j])
+        x.append(value)
+    x_forward_list.append(x)
+x_forward = pd.DataFrame(x_forward_list)
+cov_x_forward = pd.DataFrame(np.cov(x_forward))
+from numpy import linalg
+eig_x_forward = linalg.eig(cov_x_forward)
